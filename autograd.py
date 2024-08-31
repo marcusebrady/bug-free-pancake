@@ -85,6 +85,67 @@ class Tensor:
         for v in reversed(topo):
             v._backward()
 
+    def __getitem__(self, idx):
+        out = Tensor(self.data[idx], (self,), 'getitem')
+        def _backward():
+            grad = np.zeros_like(self.data)
+            grad[idx] = out.grad
+            self.grad += grad
+        out._backward = _backward
+        return out
+
+    def reshape(self, *shape):
+        out = Tensor(self.data.reshape(*shape), (self,), 'reshape')
+        def _backward():
+            self.grad += out.grad.reshape(self.data.shape)
+        out._backward = _backward
+        return out
+
+    def transpose(self, *axes):
+        out = Tensor(self.data.transpose(*axes), (self,), 'transpose')
+        def _backward():
+            self.grad += out.grad.transpose(*reversed(axes) if axes else None)
+        out._backward = _backward
+        return out
+
+    def relu(self):
+        out = Tensor(np.maximum(self.data, 0), (self,), 'relu')
+        def _backward():
+            self.grad += (out.data > 0) * out.grad
+        out._backward = _backward
+        return out
+
+def scatter_sum(src, index, dim_size):
+    out_shape = list(src.data.shape)
+    out_shape[0] = dim_size
+    out = Tensor(np.zeros(out_shape), (src,), 'scatter_sum')
+    
+    def _backward():
+        src.grad += np.zeros_like(src.data)
+        for i, idx in enumerate(index):
+            src.grad[i] += out.grad[idx]
+    
+    for i, idx in enumerate(index):
+        out.data[idx] += src.data[i]
+    
+    out._backward = _backward
+    return out
+
+def scatter_mean(src, index, dim_size):
+    out = scatter_sum(src, index, dim_size)
+    counts = np.bincount(index, minlength=dim_size)
+    counts = np.maximum(counts, 1)  # Avoid division by zero
+    out.data /= counts[:, None]
+    
+    # Modify the backward pass
+    original_backward = out._backward
+    def _backward():
+        original_backward()
+        src.grad /= counts[index][:, None]
+    out._backward = _backward
+    
+    return out
+
 def tensor(data):
     return Tensor(data)
 
