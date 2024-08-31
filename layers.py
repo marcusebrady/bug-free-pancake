@@ -43,37 +43,29 @@ class MessagePassing(Module):
     def __init__(self, aggr='mean'):
         super().__init__()
         self.aggr = aggr
+    def propagate(self, edge_index, x, edge_attr=None):
+        src, dst = edge_index.data[0], edge_index.data[1]
+        x_j = x[Tensor(src)]
+        messages = self.message(x_j, x, edge_index, edge_attr)
+        aggregated = self.aggregate(messages, Tensor(dst), dim_size=x.data.shape[0])  # Use x.data.shape
+        return self.update(aggregated, x)
 
-    def propagate(self, x, edge_index, edge_attr=None):
-        # Create messages
-        messages = self.message(x, edge_index, edge_attr)
-        aggregated = self.aggregate(messages, edge_index)
-        x = self.update(x, aggregated)
-        
-    
-        if edge_attr is not None:
-            edge_attr = self.update_edges(x, edge_index, edge_attr)
-        
-        return x, edge_attr
+    def message(self, x_j: Tensor, x: Tensor, edge_index: Tensor, edge_attr: Optional[Tensor] = None) -> Tensor:
+        return x_j
 
-    def message(self, x, edge_index, edge_attr=None):
-        return x[edge_index[1]]
-
-    def aggregate(self, messages, edge_index):
+    def aggregate(self, messages, index, dim_size):
         if self.aggr == "mean":
-            return scatter_mean(messages, edge_index[0], dim_size=0)
+            return scatter_mean(messages, index, dim_size=dim_size)
         elif self.aggr == "sum":
-            return scatter_sum(messages, edge_index[0], dim_size=0)
+            return scatter_sum(messages, index, dim_size=dim_size)
+        else:
+            raise ValueError(f"Unknown aggregation method: {self.aggr}")
 
-    def update(self, x, aggregated):
-        return aggregated
-
-    def update_edges(self, x, edge_index, edge_attr):
-      
-        return edge_attr
+    def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
+        return aggr_out
 
     def forward(self, x, edge_index, edge_attr=None):
-        return self.propagate(x, edge_index, edge_attr)
+        return self.propagate(edge_index, x, edge_attr)
 
 
 class Linear(Module):
@@ -93,7 +85,6 @@ class Linear(Module):
             output = output + self.b_linear
         return output
 
-
 class GraphConv(MessagePassing):
     @with_weight_init()
     def __init__(self, in_features: int, out_features: int):
@@ -102,16 +93,17 @@ class GraphConv(MessagePassing):
         self.out_features = out_features
         self.W_conv = Tensor(np.zeros((in_features, out_features)))
         self.b_conv = Tensor(np.zeros(out_features))
+
     def __call__(self, x: Tensor, edge_index: Tensor) -> Tensor:
         return self.forward(x, edge_index)
 
     def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
-        return self.propagate(edge_index, x=x)
+        return self.propagate(edge_index, x)
     
-    def message(self, x_j: Tensor) -> Tensor:
+    def message(self, x_j: Tensor, x: Tensor, edge_index: Tensor, edge_attr: Optional[Tensor] = None) -> Tensor:
         return x_j.matmul(self.W_conv)
     
-    def update(self, aggr_out: Tensor) -> Tensor:
+    def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
         return aggr_out + self.b_conv
 
 class GraphSAGE(MessagePassing):
@@ -129,8 +121,26 @@ class GraphSAGE(MessagePassing):
         self.lin_l = Linear(in_features, out_features, bias=bias)
         self.lin_r = Linear(in_features, out_features, bias=False)
 
-    def __call__(self):
-        pass
+    def __call__(self, x: Tensor, edge_index: Tensor) -> Tensor:
+        return self.forward(x, edge_index)
+
+    def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
+        if self.project:
+            x = self.lin_proj(x).relu()
+
+        out = self.propagate(edge_index, x=x)
+        out = self.lin_l(out) + self.lin_r(x)
+
+        if self.normalize:
+            out = out / (out.pow(2).sum(axis=1, keepdims=True).sqrt() + 1e-6)
+
+        return out
+
+    def message(self, x_j: Tensor) -> Tensor:
+        return x_j
+
+    def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
+        return aggr_out
 
 
 

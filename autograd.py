@@ -3,6 +3,7 @@ import numpy as np
 class Tensor:
     def __init__(self, data, _children=(), _op=''):
         self.data = np.array(data)
+        self.shape = self.data.shape  # Add this line
         self.grad = np.zeros_like(self.data, dtype=np.float64)
         self._backward = lambda: None
         self._prev = set(_children)
@@ -85,11 +86,14 @@ class Tensor:
         for v in reversed(topo):
             v._backward()
 
+
     def __getitem__(self, idx):
+        if isinstance(idx, Tensor):
+            idx = idx.data
         out = Tensor(self.data[idx], (self,), 'getitem')
         def _backward():
             grad = np.zeros_like(self.data)
-            grad[idx] = out.grad
+            np.add.at(grad, idx, out.grad)
             self.grad += grad
         out._backward = _backward
         return out
@@ -114,36 +118,22 @@ class Tensor:
             self.grad += (out.data > 0) * out.grad
         out._backward = _backward
         return out
-
-def scatter_sum(src, index, dim_size):
-    out_shape = list(src.data.shape)
-    out_shape[0] = dim_size
-    out = Tensor(np.zeros(out_shape), (src,), 'scatter_sum')
-    
-    def _backward():
-        src.grad += np.zeros_like(src.data)
-        for i, idx in enumerate(index):
-            src.grad[i] += out.grad[idx]
-    
-    for i, idx in enumerate(index):
-        out.data[idx] += src.data[i]
-    
-    out._backward = _backward
+def scatter_mean(src, index, dim_size):
+    if isinstance(index, Tensor):
+        index = index.data
+    out = Tensor(np.zeros((dim_size, src.data.shape[1])))
+    count = np.zeros(dim_size)
+    np.add.at(out.data, index, src.data)
+    np.add.at(count, index, 1)
+    count[count == 0] = 1  # avoid division by zero
+    out.data /= count[:, None]
     return out
 
-def scatter_mean(src, index, dim_size):
-    out = scatter_sum(src, index, dim_size)
-    counts = np.bincount(index, minlength=dim_size)
-    counts = np.maximum(counts, 1)  # Avoid division by zero
-    out.data /= counts[:, None]
-    
-    # Modify the backward pass
-    original_backward = out._backward
-    def _backward():
-        original_backward()
-        src.grad /= counts[index][:, None]
-    out._backward = _backward
-    
+def scatter_sum(src, index, dim_size):
+    if isinstance(index, Tensor):
+        index = index.data
+    out = Tensor(np.zeros((dim_size, src.data.shape[1])))
+    np.add.at(out.data, index, src.data)
     return out
 
 def tensor(data):
