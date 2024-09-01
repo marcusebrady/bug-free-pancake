@@ -25,6 +25,7 @@ class Tensor:
         
         return out
 
+
     def __mul__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
         out = Tensor(self.data * other.data, (self, other), '*')
@@ -37,6 +38,12 @@ class Tensor:
         out._backward = _backward
         
         return out
+
+    def __rmul__(self, other):
+        return self * other
+
+
+
 
     def __sub__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -193,6 +200,39 @@ class Tensor:
         
         return out
 
+    def concatenate(self, tensors, axis=0):
+        tensors = [self] + [t if isinstance(t, Tensor) else Tensor(t) for t in tensors]
+        shape_check = [t.shape[:axis] + t.shape[axis + 1:] for t in tensors]
+        if not all(s == shape_check[0] for s in shape_check):
+            raise ValueError("All tensors must have the same shape except in the concatenation axis.")
+        data = np.concatenate([t.data for t in tensors], axis=axis)
+        out = Tensor(data, tensors, 'concatenate')
+        
+        def _backward():
+            grads = [np.zeros_like(t.data) for t in tensors]
+            splits = np.cumsum([t.shape[axis] for t in tensors[:-1]])
+            split_gradients = np.split(out.grad, splits, axis=axis)
+            for i, grad in enumerate(split_gradients):
+                grads[i] += grad
+            for t, g in zip(tensors, grads):
+                t.grad += g
+
+        out._backward = _backward
+        return out
+    
+    def norm(self, dim=None, keepdim=False):
+        out = Tensor(np.linalg.norm(self.data, axis=dim, keepdims=keepdim), (self,), 'norm')
+
+        def _backward():
+            if dim is None:
+                scale = self.data / (out.data + 1e-8)  # Add small epsilon to avoid division by zero
+            else:
+                scale = self.data / (np.expand_dims(out.data, axis=dim) + 1e-8)
+            self.grad += scale * out.grad
+        out._backward = _backward
+
+        return out
+
 
 def scatter_mean(src, index, dim_size):
     if isinstance(index, Tensor):
@@ -201,7 +241,7 @@ def scatter_mean(src, index, dim_size):
     count = np.zeros(dim_size)
     np.add.at(out.data, index, src.data)
     np.add.at(count, index, 1)
-    count[count == 0] = 1  # avoid division by zero
+    count[count == 0] = 1  
     out.data /= count[:, None]
     return out
 

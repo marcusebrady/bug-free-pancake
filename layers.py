@@ -142,7 +142,14 @@ class GraphSAGE(MessagePassing):
     def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
         return aggr_out
 
+class Sequential:
+    def __init__(self, *layers):
+        self.layers = layers
 
+    def __call__(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
 #https://arxiv.org/pdf/1706.08566
 #below uses this paper
 
@@ -153,23 +160,33 @@ class ContinuousFilterConv(Module):
         self.num_features = num_features
         self.num_rbf = num_rbf
         self.cutoff = cutoff
-        self.W_filter = Linear(num_rbf, num_features)
+        
+        self.filter_network = Sequential(
+                Linear(num_rbf, num_features),
+                shifted_softplus,
+                Linear(num_features, num_features)
+            )
+
+
     def __call__(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
-        src, dst = edge_index.data[0], edge_index.data[1]
-        rbf_features = self.W_filter(edge_attr)
+        src, dst = edge_index.data[:, 0], edge_index.data[:, 1]
+        rbf_features = rbf_expansion(edge_attr, self.num_rbf, self.cutoff)
+        filters = self.filter_network(rbf_features)
+        filters = filters * cosine_cutoff(edge_attr, self.cutoff)
         x_j = x[Tensor(src)]
-        messages = x_j * rbf_features
+        messages = x_j * filters
         return scatter_sum(messages, Tensor(dst), dim_size=x.shape[0])
 
 #Message and Update use: https://arxiv.org/pdf/2102.03150
 class MessageBlock:
     @with_weight_init()
     def __init__(self, num_features: int, num_rbf: int):
-       self.conv_filter = ContinuousFilterConv(num_features, num_rbf, cutoff=5.0)
-       self.dense_vector = Linear(num_features, num_features)
-       self.dense_scalar = Linear(num_features, num_features)
-       self.dense_rbf = Linear(num_rbf, num_features)
-       self.activation = shifted_softplus
+        super().__init__()
+        self.conv_filter = ContinuousFilterConv(num_features, num_rbf, cutoff=5.0)
+        self.dense_vector = Linear(num_features, num_features)
+        self.dense_scalar = Linear(num_features, num_features)
+        self.dense_rbf = Linear(num_rbf, num_features)
+        self.activation = shifted_softplus
 
     def __call__(self, s: Tensor, v: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tuple[Tensor, Tensor]:
         src, dst = edge_index.data[0], edge_index.data[1]       
@@ -185,17 +202,26 @@ class MessageBlock:
         return s_msg, v_msg
 
 class UpdateBlock:
-   
-    pass
-
-
+    @with_weight_init()
+    def __init__(self, num_features: int):
+        super().__init__()
+        self.update_s = Linear(num_features * 2, num_features)
+        self.update_v = Linear(num_features, num_features)
+        self.activation = shifted_softplus
+    def __call__(self, s: Tensor, v: Tensor, s_msg: Tensor, v_msg: Tensor) -> Tuple[Tensor, Tensor]:
+        s_combined = s.concatenate(s_msg, axis=-1)
+        s_out = self.activation(self.update_s(s_combined))
+        v_out = v + self.update_v(v_msg)
+        return s_out, v_out
 
 
 def rbf_expansion(distances: Tensor, num_rbf: int, cutoff: float) -> Tensor:
-    #See Markdown for maths 
-    #TO_DO add cosine cutoff
     centers = Tensor(np.linspace(0, cutoff, num_rbf))
     return (-0.5 * ((distances.unsqueeze(-1) - centers) / (cutoff / num_rbf))**2).exp()
+
+def cosine_cutoff(r: Tensor, cutoff: float) -> Tensor:
+    return 0.5 * (Tensor(np.cos(np.pi * r.data / cutoff)) + 1.0) * (r.data < cutoff)
+
 
 def shifted_softplus(x: Tensor) -> Tensor:
     return Tensor(np.log(0.5 * np.exp(x.data) + 0.5))
