@@ -163,8 +163,26 @@ class ContinuousFilterConv(Module):
 
 #Message and Update use: https://arxiv.org/pdf/2102.03150
 class MessageBlock:
-    
-    pass
+    @with_weight_init()
+    def __init__(self, num_features: int, num_rbf: int):
+       self.conv_filter = ContinuousFilterConv(num_features, num_rbf, cutoff=5.0)
+       self.dense_vector = Linear(num_features, num_features)
+       self.dense_scalar = Linear(num_features, num_features)
+       self.dense_rbf = Linear(num_rbf, num_features)
+       self.activation = shifted_softplus
+
+    def __call__(self, s: Tensor, v: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tuple[Tensor, Tensor]:
+        src, dst = edge_index.data[0], edge_index.data[1]       
+        v_j = v[Tensor(src)]
+        v_processed = self.conv_filter(v_j, edge_index,edge_attr)
+        v_processed = self.dense_vector(v_processed)
+        s_j = s[Tensor(src)]
+        s_processed = self.activation(self.dense_scalar(s_j))  
+        rbf_processed = self.dense_rbf(edge_attr) 
+        combined = v_processed * s_processed * rbf_processed
+        v_msg = scatter_sum(combined, Tensor(dst), dim_size=v.shape[0])
+        s_msg = scatter_sum(combined.norm(dim=-1), Tensor(dst), dim_size=s.shape[0]) 
+        return s_msg, v_msg
 
 class UpdateBlock:
    
@@ -174,7 +192,8 @@ class UpdateBlock:
 
 
 def rbf_expansion(distances: Tensor, num_rbf: int, cutoff: float) -> Tensor:
-    #See Markdown for maths
+    #See Markdown for maths 
+    #TO_DO add cosine cutoff
     centers = Tensor(np.linspace(0, cutoff, num_rbf))
     return (-0.5 * ((distances.unsqueeze(-1) - centers) / (cutoff / num_rbf))**2).exp()
 

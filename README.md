@@ -17,3 +17,9 @@
 - [ ] Add correct typing for each class/function
 - [ ] Add compatibility to float and tensor operations 
 
+## Important To Do
+- [ ] Make dataset prearation
+- [ ] Make dataset relevant to PaiNN
+- [ ] After completion make for NAD
+- [ ] complete update block
+
