@@ -38,6 +38,54 @@ class Tensor:
         
         return out
 
+    def __sub__(self, other):
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        out = Tensor(self.data - other.data, (self, other), '-')
+
+        def _backward():
+            self.grad += np.sum(out.grad, axis=tuple(range(out.grad.ndim - self.data.ndim))) \
+                         .reshape(self.data.shape)
+            other.grad += np.sum(out.grad, axis=tuple(range(out.grad.ndim - other.data.ndim))) \
+                          .reshape(other.data.shape)
+        out._backward = _backward
+        
+        return out
+
+ 
+
+    def pow(self, exponent):
+        out = Tensor(np.power(self.data, exponent), (self,), 'pow')
+        
+        def _backward():
+            self.grad += (exponent * np.power(self.data, exponent - 1) * out.grad)
+        out._backward = _backward
+        
+        return out
+
+    def __pow__(self, exponent):
+        return self.pow(exponent)
+
+    def __truediv__(self, other):
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        out = Tensor(self.data / other.data, (self, other), '/')
+        
+        def _backward():
+            self.grad += (1 / other.data) * out.grad
+            other.grad += (-self.data / (other.data ** 2)) * out.grad
+        out._backward = _backward
+        
+        return out
+
+
+    def sqrt(self):
+        out = Tensor(np.sqrt(self.data), (self,), 'sqrt')
+        
+        def _backward():
+            self.grad += 0.5 / np.sqrt(self.data) * out.grad
+        out._backward = _backward
+        
+        return out
+
     def matmul(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
         out = Tensor(np.matmul(self.data, other.data), (self, other), 'matmul')
@@ -118,6 +166,34 @@ class Tensor:
             self.grad += (out.data > 0) * out.grad
         out._backward = _backward
         return out
+
+    def unsqueeze(self, dim):
+        new_shape = list(self.data.shape)
+        new_shape.insert(dim, 1)
+        out = Tensor(self.data.reshape(new_shape), (self,), 'unsqueeze')
+        
+        def _backward():
+            self.grad += out.grad.reshape(self.data.shape)
+        out._backward = _backward
+    
+        return out
+    def squeeze(self, dim=None):
+        if dim is None:
+            new_shape = tuple(s for s in self.data.shape if s != 1)
+        else:
+            new_shape = list(self.data.shape)
+            if new_shape[dim] == 1:
+                new_shape.pop(dim)
+        
+        out = Tensor(self.data.reshape(new_shape), (self,), 'squeeze')
+        
+        def _backward():
+            self.grad += out.grad.reshape(self.data.shape)
+        out._backward = _backward
+        
+        return out
+
+
 def scatter_mean(src, index, dim_size):
     if isinstance(index, Tensor):
         index = index.data

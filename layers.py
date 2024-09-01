@@ -40,7 +40,7 @@ class Module:
         return [getattr(self, name) for name in vars(self) if name.startswith('W_') or name.startswith('b_')]
 
 class MessagePassing(Module):
-    def __init__(self, aggr='mean'):
+    def __init__(self, aggr='sum'):
         super().__init__()
         self.aggr = aggr
     def propagate(self, edge_index, x, edge_attr=None):
@@ -88,7 +88,7 @@ class Linear(Module):
 class GraphConv(MessagePassing):
     @with_weight_init()
     def __init__(self, in_features: int, out_features: int):
-        super().__init__(aggr='add')
+        super().__init__(aggr='sum')
         self.in_features = in_features
         self.out_features = out_features
         self.W_conv = Tensor(np.zeros((in_features, out_features)))
@@ -136,12 +136,49 @@ class GraphSAGE(MessagePassing):
 
         return out
 
-    def message(self, x_j: Tensor) -> Tensor:
+    def message(self, x_j: Tensor, x: Tensor, edge_index: Tensor, edge_attr: Optional[Tensor] = None) -> Tensor:
         return x_j
 
     def update(self, aggr_out: Tensor, x: Tensor) -> Tensor:
         return aggr_out
 
 
+#https://arxiv.org/pdf/1706.08566
+#below uses this paper
 
-        
+class ContinuousFilterConv(Module):
+    @with_weight_init()
+    def __init__(self, num_features: int, num_rbf: int, cutoff: float):
+        super().__init__()
+        self.num_features = num_features
+        self.num_rbf = num_rbf
+        self.cutoff = cutoff
+        self.W_filter = Linear(num_rbf, num_features)
+    def __call__(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
+        src, dst = edge_index.data[0], edge_index.data[1]
+        rbf_features = self.W_filter(edge_attr)
+        x_j = x[Tensor(src)]
+        messages = x_j * rbf_features
+        return scatter_sum(messages, Tensor(dst), dim_size=x.shape[0])
+
+#Message and Update use: https://arxiv.org/pdf/2102.03150
+class MessageBlock:
+    
+    pass
+
+class UpdateBlock:
+   
+    pass
+
+
+
+
+def rbf_expansion(distances: Tensor, num_rbf: int, cutoff: float) -> Tensor:
+    #See Markdown for maths
+    centers = Tensor(np.linspace(0, cutoff, num_rbf))
+    return (-0.5 * ((distances.unsqueeze(-1) - centers) / (cutoff / num_rbf))**2).exp()
+
+def shifted_softplus(x: Tensor) -> Tensor:
+    return Tensor(np.log(0.5 * np.exp(x.data) + 0.5))
+
+
