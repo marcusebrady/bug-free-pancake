@@ -220,19 +220,44 @@ class Tensor:
         out._backward = _backward
         return out
     
-    def norm(self, dim=None, keepdim=False):
-        out = Tensor(np.linalg.norm(self.data, axis=dim, keepdims=keepdim), (self,), 'norm')
-
+    def norm(self, axis=None, keepdims=False):
+        out = Tensor(np.linalg.norm(self.data, axis=axis, keepdims=keepdims), (self,), 'norm')
+        
         def _backward():
-            if dim is None:
+            if axis is None:
                 scale = self.data / (out.data + 1e-8)  # Add small epsilon to avoid division by zero
             else:
-                scale = self.data / (np.expand_dims(out.data, axis=dim) + 1e-8)
+                scale = self.data / (np.expand_dims(out.data, axis=axis) + 1e-8)
             self.grad += scale * out.grad
         out._backward = _backward
-
+        
         return out
 
+
+
+
+
+    def split(self, num_splits, axis=-1):
+        splits = np.array_split(self.data, num_splits, axis=axis)
+        return [Tensor(split) for split in splits]
+
+
+    def cross(self, other):
+        assert self.data.shape[-1] == 3 and other.data.shape[-1] == 3, "Cross product is only defined for 3D vectors"
+        out = Tensor(np.cross(self.data, other.data), (self, other), 'cross')
+        def _backward():
+            self.grad += np.cross(other.data, out.grad)
+            other.grad += np.cross(out.grad, self.data)
+        out._backward = _backward
+        return out
+
+    def outer(self, other):
+        out = Tensor(np.outer(self.data, other.data), (self, other), 'outer')
+        def _backward():
+            self.grad += np.sum(out.grad * other.data, axis=-1)
+            other.grad += np.sum(out.grad * self.data, axis=0)
+        out._backward = _backward
+        return out
 
 def scatter_mean(src, index, dim_size):
     if isinstance(index, Tensor):

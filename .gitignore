@@ -1,2 +1,23 @@
 autograd_bench/
+venv/
+myenv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment variables file
+.env
+
+# Ignore data and models (if they are large)
+data/
+models/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
 
