@@ -1,16 +1,81 @@
 import numpy as np
 
 class Tensor:
-    def __init__(self, data, _children=(), _op=''):
+    def __init__(self, data, _children=(), _op='', requires_grad=True):
         self.data = np.array(data)
         self.shape = self.data.shape  # Add this line
         self.grad = np.zeros_like(self.data, dtype=np.float64)
         self._backward = lambda: None
         self._prev = set(_children)
         self._op = _op
+        self.requires_grad = requires_grad
 
     def __repr__(self):
-        return f"Tensor(data={self.data})"
+        return f"Tensor(data={self.data}), requires_grad={self.requires_grad})"
+
+    def zero_grad(self):
+        self.grad = None
+        for child in self._prev:
+            child.zero_grad()
+
+    #inspire:https://github.com/smolorg/smolgrad/blob/master/smolgrad/core/engine.py#L194
+    def _preprocess_binop(self, other):
+        other = other if isinstance(other, Tensor) else Tensor(other)
+        
+        # Handle scalar multiplication
+        if self.shape == () or other.shape == ():
+            return self, other
+
+        # Try to broadcast shapes
+        try:
+            broadcast_shape = np.broadcast_shapes(self.shape, other.shape)
+        except ValueError:
+            raise ValueError(f"Cannot broadcast shapes {self.shape} and {other.shape}")
+
+        self_broadcasted = self.broadcast_to(broadcast_shape)
+        other_broadcasted = other.broadcast_to(broadcast_shape)
+        
+        return self_broadcasted, other_broadcasted
+
+    def broadcast_to(self, shape):
+        if self.shape == shape:
+            return self
+        
+        data = np.broadcast_to(self.data, shape)
+        out = Tensor(data, _children=(self,), _op="broadcast")
+        
+        def _backward():
+            axes = tuple(range(len(shape) - len(self.shape))) + \
+                   tuple(i for i, (a, b) in enumerate(zip(shape[len(shape) - len(self.shape):], self.shape)) if a != b)
+            self.grad += np.sum(out.grad, axis=axes).reshape(self.shape)
+        
+        out._backward = _backward
+        return out
+
+    def __lt__(self, other):
+        if isinstance(other, (int, float)):
+            return Tensor(self.data < other)
+        elif isinstance(other, Tensor):
+            return Tensor(self.data < other.data)
+        else:
+            raise TypeError(f"Unsupported operand type for <: '{type(self)}' and '{type(other)}'")
+
+    def view(self, *shape):
+        # Ensure that the new shape has the same number of elements as the original tensor
+        if np.prod(shape) != np.prod(self.shape):
+            raise ValueError(f"Cannot reshape tensor of shape {self.shape} to shape {shape}")
+        
+        # Reshape the data
+        reshaped_data = self.data.reshape(shape)
+        out = Tensor(reshaped_data, _children=(self,), _op='view')
+        
+        # Define the backward pass for the view operation
+        def _backward():
+            self.grad += out.grad.reshape(self.shape)
+        
+        out._backward = _backward
+        return out
+
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -25,28 +90,28 @@ class Tensor:
         
         return out
 
-
     def __mul__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(other)
+        self, other = self._preprocess_binop(other)
         out = Tensor(self.data * other.data, (self, other), '*')
         
         def _backward():
-            self.grad += np.sum(other.data * out.grad, axis=tuple(range(out.grad.ndim - self.data.ndim))) \
-                         .reshape(self.data.shape)
-            other.grad += np.sum(self.data * out.grad, axis=tuple(range(out.grad.ndim - other.data.ndim))) \
-                          .reshape(other.data.shape)
+            if self.grad is not None:
+                self.grad += other.data * out.grad
+            if other.grad is not None:
+                other.grad += self.data * out.grad
         out._backward = _backward
         
         return out
 
+
     def __rmul__(self, other):
         return self * other
-
+        
 
 
 
     def __sub__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(other)
+        self, other = self._preprocess_binop(other) 
         out = Tensor(self.data - other.data, (self, other), '-')
 
         def _backward():
@@ -57,7 +122,26 @@ class Tensor:
         out._backward = _backward
         
         return out
-
+    def expand(self, *shape):
+        if len(shape) < len(self.shape):
+            raise ValueError(f"Expanded shape {shape} must have at least {len(self.shape)} dimensions")
+        
+        new_shape = list(shape)
+        for i, (new_dim, old_dim) in enumerate(zip(reversed(shape), reversed(self.shape))):
+            if new_dim != old_dim and old_dim != 1:
+                raise ValueError(f"Expanded shape {shape} is not compatible with current shape {self.shape}")
+            if old_dim == 1:
+                new_shape[-(i+1)] = new_dim
+        
+        expanded_data = np.broadcast_to(self.data, new_shape)
+        out = Tensor(expanded_data, _children=(self,), _op='expand')
+        
+        def _backward():
+            sum_axes = tuple(i for i, (new_dim, old_dim) in enumerate(zip(new_shape, self.shape)) if new_dim != old_dim)
+            self.grad += np.sum(out.grad, axis=sum_axes).reshape(self.shape)
+        
+        out._backward = _backward
+        return out
  
 
     def pow(self, exponent):
@@ -126,20 +210,31 @@ class Tensor:
         
         return out
 
-    def backward(self):
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
-        
-        self.grad = np.ones_like(self.data, dtype=np.float64)
-        for v in reversed(topo):
-            v._backward()
+    def backward(self, gradient=None):
+            if not self.requires_grad:
+                return
+
+            if gradient is None:
+                gradient = np.ones_like(self.data)
+            
+            if self.grad is None:
+                self.grad = np.zeros_like(self.data)
+            
+            self.grad += gradient
+
+            topo = []
+            visited = set()
+            def build_topo(v):
+                if v not in visited:
+                    visited.add(v)
+                    for child in v._prev:
+                        build_topo(child)
+                    topo.append(v)
+            build_topo(self)
+            
+            for v in reversed(topo):
+                v._backward()
+
 
 
     def __getitem__(self, idx):
@@ -159,11 +254,33 @@ class Tensor:
             self.grad += out.grad.reshape(self.data.shape)
         out._backward = _backward
         return out
+    
+
+
 
     def transpose(self, *axes):
+        if not axes:
+            axes = tuple(reversed(range(len(self.shape))))
+        elif len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+            axes = axes[0]
+        
+        # Handle partial axis specification
+        if len(axes) < len(self.shape):
+            remaining_axes = [i for i in range(len(self.shape)) if i not in axes]
+            axes = list(axes) + remaining_axes
+        
+        if len(axes) != len(self.shape):
+            raise ValueError(f"Invalid number of axes. Got {len(axes)}, expected {len(self.shape)}")
+        
         out = Tensor(self.data.transpose(*axes), (self,), 'transpose')
+        
         def _backward():
-            self.grad += out.grad.transpose(*reversed(axes) if axes else None)
+            # Compute the inverse permutation
+            inverse_axes = [0] * len(axes)
+            for i, axis in enumerate(axes):
+                inverse_axes[axis] = i
+            self.grad += out.grad.transpose(*inverse_axes)
+        
         out._backward = _backward
         return out
 
@@ -173,6 +290,14 @@ class Tensor:
             self.grad += (out.data > 0) * out.grad
         out._backward = _backward
         return out
+
+    def exp(self):
+        out = Tensor(np.exp(self.data), (self,), 'exp')
+        def _backward():
+            self.grad += out.data * out.grad
+        out._backward = _backward
+        return out
+
 
     def unsqueeze(self, dim):
         new_shape = list(self.data.shape)
@@ -219,7 +344,7 @@ class Tensor:
 
         out._backward = _backward
         return out
-    
+    '''
     def norm(self, axis=None, keepdims=False):
         out = Tensor(np.linalg.norm(self.data, axis=axis, keepdims=keepdims), (self,), 'norm')
         
@@ -232,8 +357,34 @@ class Tensor:
         out._backward = _backward
         
         return out
+    '''
 
 
+    def norm(self, axis=None, keepdims=False):
+        # Manually compute the squared values
+        squared_data = self.data ** 2
+
+        # Use the custom sum method from the Tensor class
+        summed_tensor = Tensor(squared_data).sum(axis=axis, keepdims=keepdims)
+
+        # Compute the square root to get the norm
+        norm_data = np.sqrt(summed_tensor.data)
+
+        # Create the output tensor
+        out = Tensor(norm_data, (self,), 'norm')
+
+        # Backward method to calculate the gradients
+        def _backward():
+            if axis is None:
+                scale = self.data / (out.data + 1e-8)  # Add small epsilon to avoid division by zero
+            else:
+                expanded_out_data = np.expand_dims(out.data, axis=axis)
+                scale = self.data / (expanded_out_data + 1e-8)
+            self.grad += scale * out.grad
+
+        out._backward = _backward
+
+        return out
 
 
 
@@ -258,22 +409,31 @@ class Tensor:
             other.grad += np.sum(out.grad * self.data, axis=0)
         out._backward = _backward
         return out
-
 def scatter_mean(src, index, dim_size):
     if isinstance(index, Tensor):
         index = index.data
-    out = Tensor(np.zeros((dim_size, src.data.shape[1])))
+    if len(src.shape) > 2:
+        # Reshape src to 2D if it's higher dimensional
+        src_2d = src.view(-1, src.shape[-1])
+    else:
+        src_2d = src
+    out = Tensor(np.zeros((dim_size, src_2d.shape[-1])))
     count = np.zeros(dim_size)
-    np.add.at(out.data, index, src.data)
+    np.add.at(out.data, index, src_2d.data)
     np.add.at(count, index, 1)
     count[count == 0] = 1  
     out.data /= count[:, None]
     return out
 
+
+
 def scatter_sum(src, index, dim_size):
     if isinstance(index, Tensor):
         index = index.data
-    out = Tensor(np.zeros((dim_size, src.data.shape[1])))
+    if len(src.shape) == 3:
+        out = Tensor(np.zeros((dim_size, src.shape[1], src.shape[2])))
+    else:
+        out = Tensor(np.zeros((dim_size, src.shape[-1])))
     np.add.at(out.data, index, src.data)
     return out
 

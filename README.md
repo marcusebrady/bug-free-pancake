@@ -1,25 +1,11 @@
 
 # Graph NN with Autograd for chemical systems
 
-## Eventually will do the (RoadMap) Not in order
-- [ ] Layers
-- [ ] MEssagwe Passing
-- [ ] Advanced AUtograd
-- [ ] Swfit support for metal gpu
-- [ ] compiling functionality
-- [ ] sharding
-- [ ] Turn message passing into module
-- [ ] Increase aggregation functionality
-- [ ] In autograd add tensor indexing to get to work with message passing
-- [ ] In autograd add a scatter operation (optimised)
-- [ ] Add mathematics in here
-- [ ] reference both papers for PaiNN and SchNet
-- [ ] Add correct typing for each class/function
-- [ ] Add compatibility to float and tensor operations 
+this is basic implementation with proof of concept using just autograd developed without torch etc. Initial implementation is to support foundations which will be implemented in JAX in later update with more functionality. The end goal is for NAD systems
+\\
+Building off the PaiNN paper to generate a multi coupled state version for NAD.
 
-## Important To Do
-- [ ] Make dataset prearation
-- [ ] Make dataset relevant to PaiNN
-- [ ] After completion make for NAD
-- [ ] complete update block
+### References:
+https://arxiv.org/pdf/1706.08566
+https://proceedings.mlr.press/v139/schutt21a/schutt21a.pdf
 
